@@ -48,28 +48,36 @@ func TestInotifyEvents(t *testing.T) {
 	done := make(chan bool)
 	go func() {
 		for event := range eventstream {
-			// Only count relevant events
-			if event.Name == testFile {
-				atomic.AddInt32(&eventsReceived, 1)
-				t.Logf("event received: %s", event)
-			} else {
-				t.Logf("unexpected event received: %s", event)
-			}
+			atomic.AddInt32(&eventsReceived, 1)
+			t.Logf("event received: %s", event)
 		}
 		done <- true
 	}()
 
 	// Create a file
-	// This should add at least one event to the inotify event queue
-	_, err = os.OpenFile(testFile, os.O_WRONLY|os.O_CREATE, 0666)
+	// This should add IN_CREATE and IN_OPEN events
+	f, err := os.OpenFile(testFile, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		t.Fatalf("creating test file: %s", err)
 	}
-
-	// We expect this event to be received almost immediately, but let's wait 1 s to be sure
-	time.Sleep(1 * time.Second)
-	if atomic.AddInt32(&eventsReceived, 0) == 0 {
-		t.Fatal("inotify event hasn't been received after 1 second")
+	// This should add an IN_CLOSE event
+	err = f.Close()
+	if err != nil {
+		t.Fatalf("closing test file: %s", err)
+	}
+	// This should add an IN_DELETE event
+	err = os.Remove(testFile)
+	if err != nil {
+		t.Fatalf("removing test file: %s", err)
+	}
+	// We expect this event to be received almost immediately, but let's wait 100 ms to be sure
+	time.Sleep(100 * time.Millisecond)
+	received := atomic.AddInt32(&eventsReceived, 0)
+	if received == 0 {
+		t.Fatal("inotify event hasn't been received after 100 milliseconds")
+	}
+	if received != 4 {
+		t.Fatal("expected 4 inotify events got", received)
 	}
 
 	// Try closing the inotify instance
