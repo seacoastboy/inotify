@@ -88,9 +88,6 @@ func (w *Watcher) Close() error {
 
 	// Send "quit" message to the reader goroutine
 	w.done <- true
-	for path := range w.watches {
-		w.RemoveWatch(path)
-	}
 
 	return nil
 }
@@ -109,10 +106,10 @@ func (w *Watcher) AddWatch(path string, flags uint32) error {
 	}
 
 	w.mu.Lock() // synchronize with readEvents goroutine
+	defer w.mu.Unlock()
 
 	wd, err := syscall.InotifyAddWatch(w.fd, path, flags)
 	if err != nil {
-		w.mu.Unlock()
 		return &os.PathError{
 			Op:   "inotify_add_watch",
 			Path: path,
@@ -124,7 +121,6 @@ func (w *Watcher) AddWatch(path string, flags uint32) error {
 		w.watches[path] = &watch{wd: uint32(wd), flags: flags}
 		w.paths[wd] = path
 	}
-	w.mu.Unlock()
 	return nil
 }
 
@@ -135,6 +131,11 @@ func (w *Watcher) Watch(path string) error {
 
 // RemoveWatch removes path from the watched file set.
 func (w *Watcher) RemoveWatch(path string) error {
+	if w.isClosed {
+		return errors.New(fmt.Sprintf("can't remove non-existent inotify watch for: %s", path))
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	watch, ok := w.watches[path]
 	if !ok {
 		return errors.New(fmt.Sprintf("can't remove non-existent inotify watch for: %s", path))
@@ -165,10 +166,8 @@ func (w *Watcher) readEvents() {
 	timout := syscall.NsecToTimeval(500e6)
 	readFds := newFdSet(w.fd)
 	for {
-		var (
-			n   int
-			err error
-		)
+		var n int
+		var err error
 		select {
 		// See if there is a message on the "done" channel
 		case <-w.done:
@@ -185,13 +184,7 @@ func (w *Watcher) readEvents() {
 
 		// If EOF or a "done" message is received
 		if n == 0 {
-			err := syscall.Close(w.fd)
-			if err != nil {
-				w.Error <- os.NewSyscallError("close", err)
-			}
-			close(w.Event)
-			close(w.Error)
-			return
+			goto done
 		}
 		if n < 0 {
 			w.Error <- os.NewSyscallError("read", err)
@@ -237,6 +230,18 @@ func (w *Watcher) readEvents() {
 			// Move to the next event in the buffer
 			offset += syscall.SizeofInotifyEvent + nameLen
 		}
+	}
+done:
+	w.isClosed = true // keep API behaviour consistent when EOF was read
+	err := syscall.Close(w.fd)
+	if err != nil {
+		w.Error <- os.NewSyscallError("close", err)
+	}
+	close(w.Event)
+	close(w.Error)
+	for path, watch := range w.watches {
+		delete(w.watches, path)
+		delete(w.paths, int(watch.wd))
 	}
 }
 
