@@ -95,10 +95,9 @@ func TestInotifyEvents(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("event stream was not closed after 1 second")
 	}
-	// Bug: inotify informs us with IN_IGNORED that the watch was removed.
-	// RemoveWatch will return an error for removed watches while stale data is still used.
-	// Newly added watches for the same path will fail to register because of this. The watcher
-	// can only be canceled if new events arrive otherwise it blocks forever on syscall.Read.
+	if len(watcher.watches) > 0 || len(watcher.paths) > 0 {
+		t.Error("Watches were not properly removed")
+	}
 }
 
 func TestInotifyClose(t *testing.T) {

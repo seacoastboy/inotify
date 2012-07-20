@@ -144,7 +144,15 @@ func (w *Watcher) RemoveWatch(path string) error {
 		return os.NewSyscallError("inotify_rm_watch", errno)
 	}
 	delete(w.watches, path)
+	delete(w.paths, int(watch.wd))
 	return nil
+}
+
+func newFdSet(fd int) *syscall.FdSet {
+	fds := new(syscall.FdSet)
+	elemSize := 32 * 32 / len(fds.Bits)
+	fds.Bits[fd/elemSize] |= 1 << uint(fd%elemSize)
+	return fds
 }
 
 // readEvents reads from the inotify file descriptor, converts the
@@ -152,17 +160,31 @@ func (w *Watcher) RemoveWatch(path string) error {
 func (w *Watcher) readEvents() {
 	var buf [syscall.SizeofInotifyEvent * 4096]byte
 
+	// Timeout after 500 milliseconds when waiting for events
+	// so we can reliably close the Watcher
+	timout := syscall.NsecToTimeval(500e6)
+	readFds := newFdSet(w.fd)
 	for {
-		n, err := syscall.Read(w.fd, buf[0:])
-		// See if there is a message on the "done" channel
-		var done bool
+		var (
+			n   int
+			err error
+		)
 		select {
-		case done = <-w.done:
+		// See if there is a message on the "done" channel
+		case <-w.done:
+		// Otherwise select fd with timeout
 		default:
+			tmpSet := *readFds
+			n, err = syscall.Select(w.fd+1, &tmpSet, nil, nil, &timout)
+			if n == 1 {
+				n, err = syscall.Read(w.fd, buf[0:])
+			} else {
+				continue
+			}
 		}
 
 		// If EOF or a "done" message is received
-		if n == 0 || done {
+		if n == 0 {
 			err := syscall.Close(w.fd)
 			if err != nil {
 				w.Error <- os.NewSyscallError("close", err)
@@ -196,6 +218,12 @@ func (w *Watcher) readEvents() {
 			// the "paths" map.
 			w.mu.Lock()
 			event.Name = w.paths[int(raw.Wd)]
+			// Check if the the watch was removed
+			if event.Mask&IN_IGNORED != 0 {
+				// remove stale watch
+				delete(w.watches, event.Name)
+				delete(w.paths, int(raw.Wd))
+			}
 			w.mu.Unlock()
 			if nameLen > 0 {
 				// Point "bytes" at the first byte of the filename
