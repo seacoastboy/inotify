@@ -70,14 +70,19 @@ func TestInotifyEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removing test file: %s", err)
 	}
+	// This should add IN_DELETE_SELF and IN_IGNORED events
+	err = os.Remove(dir)
+	if err != nil {
+		t.Fatalf("removing test dir: %s", err)
+	}
 	// We expect this event to be received almost immediately, but let's wait 100 ms to be sure
 	time.Sleep(100 * time.Millisecond)
 	received := atomic.AddInt32(&eventsReceived, 0)
 	if received == 0 {
 		t.Fatal("inotify event hasn't been received after 100 milliseconds")
 	}
-	if received != 4 {
-		t.Fatal("expected 4 inotify events got", received)
+	if received != 6 {
+		t.Fatal("expected 6 inotify events got", received)
 	}
 
 	// Try closing the inotify instance
@@ -90,6 +95,10 @@ func TestInotifyEvents(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("event stream was not closed after 1 second")
 	}
+	// Bug: inotify informs us with IN_IGNORED that the watch was removed.
+	// RemoveWatch will return an error for removed watches while stale data is still used.
+	// Newly added watches for the same path will fail to register because of this. The watcher
+	// can only be canceled if new events arrive otherwise it blocks forever on syscall.Read.
 }
 
 func TestInotifyClose(t *testing.T) {
