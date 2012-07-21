@@ -163,7 +163,7 @@ func (w *Watcher) readEvents() {
 
 	// Timeout after 500 milliseconds when waiting for events
 	// so we can reliably close the Watcher
-	timout := syscall.NsecToTimeval(500e6)
+	timeout := int64(500e6)
 	readFds := newFdSet(w.fd)
 	for {
 		var n int
@@ -174,9 +174,12 @@ func (w *Watcher) readEvents() {
 		// Otherwise select fd with timeout
 		default:
 			tmpSet := *readFds
-			n, err = syscall.Select(w.fd+1, &tmpSet, nil, nil, &timout)
+			timeval := syscall.NsecToTimeval(timeout)
+			n, err = syscall.Select(w.fd+1, &tmpSet, nil, nil, &timeval)
 			if n == 1 {
 				n, err = syscall.Read(w.fd, buf[0:])
+			} else if err != nil {
+				w.Error <- err
 			} else {
 				continue
 			}
